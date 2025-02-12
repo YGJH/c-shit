@@ -173,7 +173,19 @@ int main(int argc, char* argv[]) {
     // Initialize libcurl globally.
     curl_global_init(CURL_GLOBAL_ALL);
 
-    // 先取得總檔案大小（利用 HEAD / GET 方式）。
+    std::string final_filename;
+    if(argc > 2) {
+        final_filename = argv[2];
+    } else {
+        final_filename = get_filename_from_url(url);
+    }
+    if(final_filename == "downloaded_file") {
+        std::cerr << "uhh....it seems the file isn't avaliable" << std::endl;
+        std::cerr << "You can blame the programer maybe he is an idiot." << std::endl;
+        return 1;
+    }
+
+   // 先取得總檔案大小（利用 HEAD / GET 方式）。
     long total_size = get_file_size(url);
     if (total_size <= 0) {
         std::cerr << "Unable to get valid file size. Starting single thread download..." << std::endl;
@@ -182,8 +194,19 @@ int main(int argc, char* argv[]) {
         curl_global_cleanup();
         return 0;
     }
-    
-    std::cout << "File size: " << total_size << " bytes" << std::endl;
+    putchar('\r');
+    if(total_size >= 1024LL * 1024 * 1024) {
+        double display_size = total_size / (1024.0 * 1024 * 1024);
+        std::cout << "File size: " << display_size << " GB" << std::endl;
+    } else if(total_size >= 1024 * 1024) {
+        double display_size = total_size / (1024.0 * 1024);
+        std::cout << "File size: " << display_size << " MB" << std::endl;
+    } else if(total_size >= 1024) {
+        double display_size = total_size / 1024.0;
+        std::cout << "File size: " << display_size << " KB" << std::endl;
+    } else {
+        std::cout << "File size: " << total_size << " bytes" << std::endl;
+    }    
 
     // 決定使用的執行緒數，若無法偵測則至少使用 1 個。
     unsigned int num_threads = std::thread::hardware_concurrency();
@@ -199,29 +222,29 @@ int main(int argc, char* argv[]) {
     auto start_time = steady_clock::now();
 
     // 啟動一個進度列執行緒。
-    int pen = 0;
+    int pen = 10;
     const int step = (total_size / 100 <= 0) ? 1 : total_size / 100;
-    int now  = (total_size / 100 <= 0) ? 1 : total_size / 100;
+    int now = (total_size / 100 <= 0) ? 1 : total_size / 100;
+    int tmp = 0;
     std::thread progress_thread([&]() {
         while (downloaded_bytes.load() < total_size) {
             if(downloaded_bytes.load() >= now){
+                tmp = downloaded_bytes.load() / step;
                 std::lock_guard<std::mutex> lock(cout_mutex);
-                std::cout << "\rProgress: " << (int)(downloaded_bytes.load() / step) << "%";
+                std::cout << "\rProgress: " << tmp << "%";
                 std::cout.flush();
                 now += downloaded_bytes.load();
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(pen));
-            if(pen < 1000) {
+            if(pen < 800) {
                 pen += 10;
             }
-        }
-        // 確保進度列顯示 100%
-        {
-            std::lock_guard<std::mutex> lock(cout_mutex);
-            std::cout << "\rProgress: 100%" << std::endl;
+            if(tmp > 85) {
+                pen = 500;
+            }
         }
     });
-
+    progress_thread.detach();
     // Spawn threads to download each segment.
     for (unsigned int i = 0; i < num_threads; i++) {
         long seg_start = i * segment_size;
@@ -236,26 +259,11 @@ int main(int argc, char* argv[]) {
         t.join();
 
     // 等待進度列執行緒結束。
-    progress_thread.join();
-    std::string final_filename;
+    {
+        std::lock_guard<std::mutex> lock(cout_mutex);
+        std::cout << "\rProgress: 100%" << std::endl;
+    } 
     // 合併所有區段成最終檔案。
-    if(argc > 2) {
-        final_filename = argv[2];
-    } else {
-        final_filename = get_filename_from_url(url);
-    }
-    if(final_filename == "downloaded_file") {
-        std::cerr << "uhh....it seems the file isn't avaliable" << std::endl;
-        std::cerr << "You can blame the programer maybe he is an idiot." << std::endl;
-        for (const auto& part : part_files) {
-            std::ifstream input(part, std::ios::binary);
-            if (!input) {
-                continue;
-            }
-            std::remove(part.c_str());
-        }
-        return 1;
-    }
 
     std::ofstream output(final_filename, std::ios::binary);
     if (!output) {
