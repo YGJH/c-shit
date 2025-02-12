@@ -61,30 +61,12 @@ size_t header_callback(char* buffer, size_t size, size_t nitems, void* userdata)
 // First try a HEAD request; if that fails, try GET with range "0-0".
 long get_file_size(const std::string& url) {
     long file_size = -1;
-    {
-        CURL* curl = curl_easy_init();
-        if (curl) {
-            curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-            // Use HEAD request.
-            curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
-            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-            CURLcode res = curl_easy_perform(curl);
-            if (res == CURLE_OK) {
-                double cl = 0;
-                if (curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl) == CURLE_OK &&
-                    !std::isnan(cl) && cl > 0)
-                {
-                    file_size = static_cast<long>(cl);
-                }
-            }
-            curl_easy_cleanup(curl);
-        }
-    }
-    // If file_size is still invalid, try GET with range "0-0" and use header_callback.
+
     if (file_size <= 0) {
         file_size = -1;
         CURL* curl = curl_easy_init();
         if (curl) {
+            curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_RANGE, "0-0");
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -200,6 +182,7 @@ int main(int argc, char* argv[]) {
         curl_global_cleanup();
         return 0;
     }
+    
     std::cout << "File size: " << total_size << " bytes" << std::endl;
 
     // 決定使用的執行緒數，若無法偵測則至少使用 1 個。
@@ -216,15 +199,21 @@ int main(int argc, char* argv[]) {
     auto start_time = steady_clock::now();
 
     // 啟動一個進度列執行緒。
+    int pen = 0;
+    const int step = (total_size / 100 <= 0) ? 1 : total_size / 100;
+    int now  = (total_size / 100 <= 0) ? 1 : total_size / 100;
     std::thread progress_thread([&]() {
         while (downloaded_bytes.load() < total_size) {
-            double progress = (double)downloaded_bytes.load() / total_size * 100;
-            {
+            if(downloaded_bytes.load() >= now){
                 std::lock_guard<std::mutex> lock(cout_mutex);
-                std::cout << "\rProgress: " << static_cast<int>(progress) << "%";
+                std::cout << "\rProgress: " << (int)(downloaded_bytes.load() / step) << "%";
                 std::cout.flush();
+                now += downloaded_bytes.load();
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::this_thread::sleep_for(std::chrono::milliseconds(pen));
+            if(pen < 1000) {
+                pen += 10;
+            }
         }
         // 確保進度列顯示 100%
         {
@@ -248,9 +237,26 @@ int main(int argc, char* argv[]) {
 
     // 等待進度列執行緒結束。
     progress_thread.join();
-
+    std::string final_filename;
     // 合併所有區段成最終檔案。
-    std::string final_filename = get_filename_from_url(url);
+    if(argc > 2) {
+        final_filename = argv[2];
+    } else {
+        final_filename = get_filename_from_url(url);
+    }
+    if(final_filename == "downloaded_file") {
+        std::cerr << "uhh....it seems the file isn't avaliable" << std::endl;
+        std::cerr << "You can blame the programer maybe he is an idiot." << std::endl;
+        for (const auto& part : part_files) {
+            std::ifstream input(part, std::ios::binary);
+            if (!input) {
+                continue;
+            }
+            std::remove(part.c_str());
+        }
+        return 1;
+    }
+
     std::ofstream output(final_filename, std::ios::binary);
     if (!output) {
         std::cerr << "Failed to create output file " << final_filename << std::endl;
@@ -276,8 +282,11 @@ int main(int argc, char* argv[]) {
     auto end_time = steady_clock::now();
     duration<double> elapsed = end_time - start_time;
     std::cout << "Download complete: " << final_filename << std::endl;
-    std::cout << "Total time: " << elapsed.count() << " seconds" << std::endl;
-
+    float total_seconds = elapsed.count();
+    int hours = total_seconds / 3600;
+    int minutes = (total_seconds - hours * 3600) / 60;
+    float seconds = total_seconds - hours * 3600 - minutes * 60;
+    std::cout << "Total time: " << hours << "h " << minutes << "m " << seconds << "s" << std::endl;
     curl_global_cleanup();
     return 0;
 }
