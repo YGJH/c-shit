@@ -1,0 +1,6 @@
+NeuralNetwork/pytorch/
+NeuralNetwork/build/
+NeuralNetwork/data/
+NeuralNetwork/interpolation.egg-info/
+*.out
+*.txt
