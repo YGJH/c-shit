@@ -1,4 +1,4 @@
-// g++ extractFile.cpp -o extractFile -lzip -pthread -std=c++23
+// g++ ext.cpp -o ext -lzip -pthread -std=c++23
 #include <iostream>
 #include <fstream>
 #include <vector>

@@ -123,10 +123,10 @@ void download_segment(const std::string& url, long start, long end, const std::s
 std::string get_filename_from_url(const std::string& url) {
     size_t pos = url.find_last_of('/');
     if (pos == std::string::npos)
-        return "downloaded_file";
+        return ".";
     std::string fname = url.substr(pos + 1);
     if(fname.empty())
-        return "downloaded_file";
+        return ".";
     return fname;
 }
 
@@ -155,6 +155,78 @@ void download_whole(const std::string& url, const std::string& final_filename) {
     curl_easy_cleanup(curl);
 }
 
+// 透過 out 參數 lps 回傳 pattern 的 LPS 陣列
+void computeLPS(const std::string &pattern, std::vector<int>* lps) {
+    int m = pattern.size();
+    lps->resize(m, 0);
+    int len = 0, i = 1;
+    while (i < m) {
+        if (pattern[i] == pattern[len]) {
+            len++;
+            (*lps)[i] = len;
+            i++;
+        } else {
+            if (len != 0) {
+                len = (*lps)[len - 1];
+            } else {
+                (*lps)[i] = 0;
+                i++;
+            }
+        }
+    }
+}
+
+// 透過 out 參數 matches 回傳所有匹配的位置
+bool kmpSearch(const std::string &text, const std::string &pattern) { //, vector<int>* matches) {
+    if (pattern.empty()) return false;
+    int n = text.size();
+    int m = pattern.size();
+    std::vector<int> lps;
+    computeLPS(pattern, &lps);
+    int i = 0, j = 0;
+    while (i < n) {
+        if (text[i] == pattern[j]) {
+            i++;
+            j++;
+        }
+        if (j == m) {
+            //matches->push_back(i - j);
+            return false;
+            j = lps[j - 1];
+        } else if (i < n && text[i] != pattern[j]) {
+            if (j != 0)
+                j = lps[j - 1];
+            else
+                i++;
+        }
+    }
+    return true;
+}
+inline bool find_char(std::string& a , char c) {
+    for(int i = 0 ; i < a.length() ; i++) { if(a[i] == c) return true; }
+    return false;
+}
+void progress_bar(int total_size) {
+    int now = 0, tmp , step = total_size / 100 , pen = 0;    
+    while (downloaded_bytes.load() < total_size-10) {
+            if(downloaded_bytes.load() >= now){
+                tmp = downloaded_bytes.load() / step;
+                std::lock_guard<std::mutex> lock(cout_mutex);
+                std::cout << "\rProgress: " << tmp << "%";
+                std::cout.flush();
+                now += downloaded_bytes.load();
+            }
+            if(pen < 1500 && tmp < 80) {
+                pen += 10;
+            }
+            if(tmp > 85) {
+                pen = 500;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(pen));
+        }
+}
+
+
 int main(int argc, char* argv[]) {
     // 設定全域 locale，避免亂碼。這裡使用 "C.UTF-8" (若無效則捕獲例外)
     try {
@@ -172,19 +244,58 @@ int main(int argc, char* argv[]) {
 
     // Initialize libcurl globally.
     curl_global_init(CURL_GLOBAL_ALL);
-
-    // 先取得總檔案大小（利用 HEAD / GET 方式）。
-    long total_size = get_file_size(url);
-    if (total_size <= 0) {
-        std::cerr << "Unable to get valid file size. Starting single thread download..." << std::endl;
-        std::string final_filename = get_filename_from_url(url);
-        download_whole(url, final_filename);
-        curl_global_cleanup();
-        return 0;
-    }
+    std::string final_filename;
     
-    std::cout << "File size: " << total_size << " bytes" << std::endl;
+    if(argc > 2) {
+        final_filename = argv[2];
+    } else {
+        std::string str = get_filename_from_url(url);
+        final_filename.reserve(100);
+        for(int i = 0 ; i < str.length() ; i++) {
+            if(str[i] == '\'') continue;
+            if(str[i] == '?'|| str[i] == '=') break;
+            final_filename.push_back(str[i]);
+        }
+    }
+    std::cerr << "Your output file name: " << final_filename << std::endl;
+    
+    if(!find_char(final_filename, '.')) {
+        std::cerr << "uhh....it seems the file isn't avaliable" << std::endl;
+        std::cerr << "You can blame the programer maybe he is an idiot." << std::endl;
+        return 1;
+    }
 
+   // 先取得總檔案大小（利用 HEAD / GET 方式）。
+    long total_size = get_file_size(url);
+    putchar('\r');
+    if(total_size >= 1024LL * 1024 * 1024) {
+        double display_size = total_size / (1024.0 * 1024 * 1024);
+        std::cout << "File size: " << display_size << " GB" << std::endl;
+    } else if(total_size >= 1024 * 1024) {
+        double display_size = total_size / (1024.0 * 1024);
+        std::cout << "File size: " << display_size << " MB" << std::endl;
+    } else if(total_size >= 1024) {
+        double display_size = total_size / 1024.0;
+        std::cout << "File size: " << display_size << " KB" << std::endl;
+    } else {
+        std::cout << "File size: " << total_size << " bytes" << std::endl;
+    }    
+    if (total_size / 1024 / 1024 <= 60) {
+       std::cerr << "Starting single thread download..." << std::endl;
+       auto start_time = steady_clock::now();
+       std::thread progress_thread(progress_bar , total_size);
+       progress_thread.detach();
+       download_whole(url, final_filename);
+       auto end_time = steady_clock::now();
+       curl_global_cleanup();
+       duration<float> elapsed = end_time - start_time;
+       auto total_seconds = elapsed.count();
+       std::cout << "\rProgress: 100%" << std::endl;
+       int minutes = (total_seconds) / 60;
+       float seconds = total_seconds - minutes * 60;
+       std::cout << "Total time: " << minutes << "m " << seconds << "s" << std::endl; 
+       return 0;
+    }
     // 決定使用的執行緒數，若無法偵測則至少使用 1 個。
     unsigned int num_threads = std::thread::hardware_concurrency();
     if (num_threads == 0)
@@ -199,32 +310,12 @@ int main(int argc, char* argv[]) {
     auto start_time = steady_clock::now();
 
     // 啟動一個進度列執行緒。
-    int pen = 0;
+    int pen = 10;
     const int step = (total_size / 100 <= 0) ? 1 : total_size / 100;
-    int now  = (total_size / 100 <= 0) ? 1 : total_size / 100;
-    std::thread progress_thread([&]() {
-        while (downloaded_bytes.load() < total_size) {
-            if(downloaded_bytes.load() >= now){
-                std::lock_guard<std::mutex> lock(cout_mutex);
-                std::cout << "\rProgress: " << (int)(downloaded_bytes.load() / step) << "%";
-                std::cout.flush();
-                now += downloaded_bytes.load();
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(pen));
-            pen += 10;
-            if(pen > 1000) {
-                pen = 1000;
-            } else{
-                pen += 10;
-            }
-        }
-        // 確保進度列顯示 100%
-        {
-            std::lock_guard<std::mutex> lock(cout_mutex);
-            std::cout << "\rProgress: 100%" << std::endl;
-        }
-    });
-
+    int now = (total_size / 100 <= 0) ? 1 : total_size / 100;
+    int tmp = 0;
+    std::thread progress_thread(progress_bar , total_size);
+    progress_thread.detach();
     // Spawn threads to download each segment.
     for (unsigned int i = 0; i < num_threads; i++) {
         long seg_start = i * segment_size;
@@ -239,26 +330,11 @@ int main(int argc, char* argv[]) {
         t.join();
 
     // 等待進度列執行緒結束。
-    progress_thread.join();
-    std::string final_filename;
+    {
+        std::lock_guard<std::mutex> lock(cout_mutex);
+        std::cout << "\rProgress: 100%" << std::endl;
+    } 
     // 合併所有區段成最終檔案。
-    if(argc > 2) {
-        final_filename = argv[2];
-    } else {
-        final_filename = get_filename_from_url(url);
-    }
-    if(final_filename == "downloaded_file") {
-        std::cerr << "uhh....it seems the file isn't avaliable" << std::endl;
-        std::cerr << "You can blame the programer maybe he is an idiot." << std::endl;
-        for (const auto& part : part_files) {
-            std::ifstream input(part, std::ios::binary);
-            if (!input) {
-                continue;
-            }
-            std::remove(part.c_str());
-        }
-        return 1;
-    }
 
     std::ofstream output(final_filename, std::ios::binary);
     if (!output) {
@@ -285,10 +361,10 @@ int main(int argc, char* argv[]) {
     auto end_time = steady_clock::now();
     duration<double> elapsed = end_time - start_time;
     std::cout << "Download complete: " << final_filename << std::endl;
-    double total_seconds = elapsed.count();
+    float total_seconds = elapsed.count();
     int hours = total_seconds / 3600;
     int minutes = (total_seconds - hours * 3600) / 60;
-    double seconds = total_seconds - hours * 3600 - minutes * 60;
+    float seconds = total_seconds - hours * 3600 - minutes * 60;
     std::cout << "Total time: " << hours << "h " << minutes << "m " << seconds << "s" << std::endl;
     curl_global_cleanup();
     return 0;
