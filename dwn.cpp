@@ -61,17 +61,39 @@ size_t header_callback(char* buffer, size_t size, size_t nitems, void* userdata)
 // First try a HEAD request; if that fails, try GET with range "0-0".
 long get_file_size(const std::string& url) {
     long file_size = -1;
+    CURL* curl = curl_easy_init();
+    if (curl) {
+        // First, try HEAD request to get file size via Content-Length.
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_NOBODY, 1L); // HEAD request
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+        CURLcode res = curl_easy_perform(curl);
+        if (res == CURLE_OK) {
+            double cl;
+            res = curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD, &cl);
+            if ((res == CURLE_OK) && (cl > 0.0)) {
+                file_size = static_cast<long>(cl);
+            }
+        }
+        curl_easy_cleanup(curl);
+    }
 
+    // Fallback: if file_size still invalid, try GET with "0-0" range.
     if (file_size <= 0) {
         file_size = -1;
-        CURL* curl = curl_easy_init();
+        curl = curl_easy_init();
         if (curl) {
             curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_RANGE, "0-0");
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
             curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
             curl_easy_setopt(curl, CURLOPT_HEADERDATA, &file_size);
+            
             CURLcode res = curl_easy_perform(curl);
             if (res != CURLE_OK) {
                 std::lock_guard<std::mutex> lock(cout_mutex);
@@ -103,6 +125,8 @@ void download_segment(const std::string& url, long start, long end, const std::s
     std::string rangeStr = rangeStream.str();
     
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // disable SSL peer verification
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L); // disable SSL host verification
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -144,6 +168,8 @@ void download_whole(const std::string& url, const std::string& final_filename) {
         return;
     }
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // disable SSL peer verification
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L); // disable SSL host verification
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
